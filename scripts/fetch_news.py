@@ -1,5 +1,5 @@
-"""Google 뉴스 RSS를 모아 news.json으로 저장 (GitHub Actions에서 실행)."""
-import json, time, urllib.parse, urllib.request, xml.etree.ElementTree as ET
+"""Google 뉴스 RSS를 모아 site/에 index.html + news.json을 만듦 (GitHub Actions → Pages 배포, 저장소 기록 없음)."""
+import json, os, shutil, time, urllib.parse, urllib.request, xml.etree.ElementTree as ET
 from email.utils import parsedate_to_datetime
 
 TOPICS = [
@@ -8,7 +8,12 @@ TOPICS = [
     ("IT 외주", "IT 외주 개발"),
     ("개발자 채용", "개발자 채용 스타트업"),
     ("미국 테크", "미국 테크 스타트업"),
+    ("한국 경제", "한국 경제"),
+    ("미국 경제", "미국 경제"),
+    ("국제 정세", "외교 OR 전쟁 OR 테러 OR 분쟁"),
 ]
+PAGES_URL = "https://pipeline964.github.io/pipeline-news/news.json"
+OUT_DIR = "site"
 MAX_ITEMS = 15
 
 def feed_url(q):
@@ -41,9 +46,9 @@ def parse(xml_bytes):
     return out[:MAX_ITEMS]
 
 def main():
+    # 수집 실패한 주제는 지금 게시된 뉴스를 그대로 유지
     try:
-        with open("news.json", encoding="utf-8") as f:
-            prev = json.load(f).get("topics", {})
+        prev = json.loads(fetch(PAGES_URL)).get("topics", {})
     except Exception:
         prev = {}
     topics = {}
@@ -55,7 +60,9 @@ def main():
             topics[label] = prev.get(label, [])
         time.sleep(1)
     data = {"updated": int(time.time()), "order": [t[0] for t in TOPICS], "topics": topics}
-    with open("news.json", "w", encoding="utf-8") as f:
+    os.makedirs(OUT_DIR, exist_ok=True)
+    shutil.copy("index.html", os.path.join(OUT_DIR, "index.html"))
+    with open(os.path.join(OUT_DIR, "news.json"), "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=1)
 
 if __name__ == "__main__":
