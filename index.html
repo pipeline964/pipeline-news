@@ -64,206 +64,78 @@
     <div class="meta"><span id="upd">—</span><button class="btn" id="refresh" title="새로고침" aria-label="새로고침">↻</button></div>
   </div>
   <div class="chips" id="chips"></div>
-  <div class="addbox" id="addbox">
-    <input id="kw" placeholder="키워드 입력 (예: SaaS 투자)" maxlength="40">
-    <button id="kwok">추가</button>
-  </div>
   <ul id="list"></ul>
 
 <script>
-  var DEFAULT_TOPICS = [
-    { label: "주요 뉴스", q: "" },
-    { label: "스타트업 투자", q: "스타트업 투자 유치" },
-    { label: "IT 외주", q: "IT 외주 개발" },
-    { label: "개발자 채용", q: "개발자 채용 스타트업" },
-    { label: "미국 테크", q: "미국 테크 스타트업" }
-  ];
-  var MAX_ITEMS = 12, REFRESH_MS = 10 * 60 * 1000;
-  var STORE = "pipeline-news-v1";
+  var MAX_ITEMS = 12, POLL_MS = 5 * 60 * 1000, STORE = "pipeline-news-tab";
+  var data = null, active = null;
+  try { active = localStorage.getItem(STORE); } catch (e) {}
 
-  function load(){ try { return JSON.parse(localStorage.getItem(STORE) || "{}"); } catch (e) { return {}; } }
-  function save(s){ try { localStorage.setItem(STORE, JSON.stringify(s)); } catch (e) {} }
-  var state = load();
-  var custom = Array.isArray(state.custom) ? state.custom : [];
-  var active = typeof state.active === "number" ? state.active : 0;
+  var listEl = document.getElementById("list"), chipsEl = document.getElementById("chips");
+  var updEl = document.getElementById("upd"), refBtn = document.getElementById("refresh");
 
-  function topics(){ return DEFAULT_TOPICS.concat(custom.map(function(q){ return { label: q, q: q, custom: true }; })); }
-
-  function feedUrl(q){
-    return q
-      ? "https://news.google.com/rss/search?q=" + encodeURIComponent(q + " when:7d") + "&hl=ko&gl=KR&ceid=KR:ko"
-      : "https://news.google.com/rss?hl=ko&gl=KR&ceid=KR:ko";
-  }
-  function webUrl(q){
-    return q ? "https://news.google.com/search?q=" + encodeURIComponent(q) + "&hl=ko&gl=KR&ceid=KR:ko"
-             : "https://news.google.com/?hl=ko&gl=KR&ceid=KR:ko";
-  }
-
-  function withTimeout(p, ms){
-    return new Promise(function(res, rej){
-      var t = setTimeout(function(){ rej(new Error("timeout")); }, ms);
-      p.then(function(v){ clearTimeout(t); res(v); }, function(e){ clearTimeout(t); rej(e); });
-    });
-  }
-  function splitTitle(t){
-    var i = t.lastIndexOf(" - ");
-    return i > 0 ? { title: t.slice(0, i), src: t.slice(i + 3) } : { title: t, src: "" };
-  }
-  function parseXml(text){
-    var doc = new DOMParser().parseFromString(text, "text/xml");
-    var items = Array.prototype.slice.call(doc.getElementsByTagName("item"));
-    if (!items.length) throw new Error("no items");
-    return items.map(function(it){
-      function g(tag){ var n = it.getElementsByTagName(tag)[0]; return n ? n.textContent : ""; }
-      var st = splitTitle(g("title"));
-      return { title: st.title, src: g("source") || st.src, link: g("link"), date: new Date(g("pubDate")) };
-    });
-  }
-  // 1) rss2json (JSON, CORS 허용)
-  function viaRss2json(url){
-    return fetch("https://api.rss2json.com/v1/api.json?rss_url=" + encodeURIComponent(url))
-      .then(function(r){ if (!r.ok) throw new Error(r.status); return r.json(); })
-      .then(function(j){
-        if (j.status !== "ok" || !j.items || !j.items.length) throw new Error("rss2json");
-        return j.items.map(function(it){
-          var st = splitTitle(it.title || "");
-          return { title: st.title, src: st.src || it.author || "", link: it.link,
-                   date: new Date((it.pubDate || "").replace(" ", "T") + "Z") };
-        });
-      });
-  }
-  // 2) XML 프록시
-  function viaProxy(prefix){
-    return function(url){
-      return fetch(prefix + encodeURIComponent(url))
-        .then(function(r){ if (!r.ok) throw new Error(r.status); return r.text(); })
-        .then(parseXml);
-    };
-  }
-  var SOURCES = [
-    viaRss2json,
-    viaProxy("https://api.allorigins.win/raw?url="),
-    viaProxy("https://corsproxy.io/?url=")
-  ];
-
-  function fetchFeed(url){
-    var i = 0;
-    function next(){
-      if (i >= SOURCES.length) return Promise.reject(new Error("all failed"));
-      var fn = SOURCES[i++];
-      return withTimeout(fn(url), 9000).catch(next);
-    }
-    return next();
-  }
-
-  function ago(d){
-    if (isNaN(d)) return "";
-    var m = Math.round((Date.now() - d.getTime()) / 60000);
+  function ago(sec){
+    var m = Math.round((Date.now() / 1000 - sec) / 60);
     if (m < 1) return "방금";
     if (m < 60) return m + "분 전";
     var h = Math.round(m / 60);
     if (h < 24) return h + "시간 전";
     return Math.round(h / 24) + "일 전";
   }
-  function pad(n){ return (n < 10 ? "0" : "") + n; }
-
-  var listEl = document.getElementById("list");
-  var chipsEl = document.getElementById("chips");
-  var updEl = document.getElementById("upd");
-  var refBtn = document.getElementById("refresh");
-  var addbox = document.getElementById("addbox");
-  var kw = document.getElementById("kw");
-  var reqId = 0;
-
   function renderChips(){
     chipsEl.textContent = "";
-    topics().forEach(function(t, idx){
+    data.order.forEach(function(label){
       var b = document.createElement("button");
-      b.className = "chip" + (idx === active ? " on" : "");
-      b.textContent = t.label;
-      b.onclick = function(){ active = idx; persist(); renderChips(); refresh(); };
-      if (t.custom){
-        var x = document.createElement("span");
-        x.className = "x"; x.textContent = "✕"; x.title = "삭제";
-        x.onclick = function(ev){
-          ev.stopPropagation();
-          custom.splice(idx - DEFAULT_TOPICS.length, 1);
-          if (active === idx) active = 0; else if (active > idx) active--;
-          persist(); renderChips(); refresh();
-        };
-        b.appendChild(x);
-      }
+      b.className = "chip" + (label === active ? " on" : "");
+      b.textContent = label;
+      b.onclick = function(){ active = label; try { localStorage.setItem(STORE, label); } catch (e) {} renderChips(); renderList(); };
       chipsEl.appendChild(b);
     });
-    var add = document.createElement("button");
-    add.className = "chip add"; add.textContent = "＋ 키워드";
-    add.onclick = function(){ addbox.classList.toggle("show"); if (addbox.classList.contains("show")) kw.focus(); };
-    chipsEl.appendChild(add);
   }
-  function persist(){ save({ custom: custom, active: active }); }
-
-  function addKeyword(){
-    var v = kw.value.trim();
-    if (!v) return;
-    if (custom.indexOf(v) < 0) custom.push(v);
-    active = topics().length - 1;
-    for (var i = 0; i < topics().length; i++) if (topics()[i].q === v) active = i;
-    kw.value = ""; addbox.classList.remove("show");
-    persist(); renderChips(); refresh();
-  }
-  document.getElementById("kwok").onclick = addKeyword;
-  kw.addEventListener("keydown", function(e){ if (e.key === "Enter") addKeyword(); if (e.key === "Escape") addbox.classList.remove("show"); });
-
-  function skeleton(){
+  function renderList(){
     listEl.textContent = "";
-    for (var i = 0; i < 5; i++){ var li = document.createElement("li"); li.className = "sk"; listEl.appendChild(li); }
-  }
-  function renderItems(items){
-    listEl.textContent = "";
-    items.sort(function(a, b){ return (b.date || 0) - (a.date || 0); });
-    items.slice(0, MAX_ITEMS).forEach(function(it){
+    var items = (data.topics[active] || []).slice(0, MAX_ITEMS);
+    if (!items.length){ msg("이 주제의 새 뉴스가 아직 없어요."); return; }
+    items.forEach(function(it){
       var li = document.createElement("li"), a = document.createElement("a");
       a.href = it.link; a.target = "_blank"; a.rel = "noopener noreferrer";
       var t = document.createElement("div"); t.className = "t"; t.textContent = it.title;
       var s = document.createElement("div"); s.className = "s";
-      var fresh = !isNaN(it.date) && (Date.now() - it.date.getTime()) < 3 * 3600000;
-      if (fresh){ var n = document.createElement("span"); n.className = "new"; n.textContent = "NEW"; s.appendChild(n); }
-      var src = document.createElement("span"); src.className = "src"; src.textContent = it.src;
-      var tm = document.createElement("span"); tm.textContent = ago(it.date);
-      s.appendChild(src); if (it.src && tm.textContent) s.appendChild(document.createTextNode("·")); s.appendChild(tm);
+      if (it.ts && Date.now() / 1000 - it.ts < 3 * 3600){ var n = document.createElement("span"); n.className = "new"; n.textContent = "NEW"; s.appendChild(n); }
+      var src = document.createElement("span"); src.className = "src"; src.textContent = it.src || "";
+      s.appendChild(src);
+      if (it.ts){ if (it.src) s.appendChild(document.createTextNode("·")); var tm = document.createElement("span"); tm.textContent = ago(it.ts); s.appendChild(tm); }
       a.appendChild(t); a.appendChild(s); li.appendChild(a); listEl.appendChild(li);
     });
   }
-  function renderError(q){
+  function msg(text){
     listEl.textContent = "";
-    var li = document.createElement("li"); li.className = "msg";
-    li.appendChild(document.createTextNode("뉴스를 불러오지 못했어요. 잠시 후 ↻ 를 눌러주세요. "));
-    var a = document.createElement("a"); a.href = webUrl(q); a.target = "_blank"; a.rel = "noopener noreferrer";
-    a.textContent = "Google 뉴스에서 바로 보기 →";
-    li.appendChild(a); listEl.appendChild(li);
+    var li = document.createElement("li"); li.className = "msg"; li.textContent = text; listEl.appendChild(li);
   }
-
-  function refresh(){
-    var my = ++reqId, t = topics()[active] || topics()[0];
-    skeleton(); refBtn.classList.add("spin");
-    fetchFeed(feedUrl(t.q)).then(function(items){
-      if (my !== reqId) return;
-      renderItems(items);
-      var d = new Date(); updEl.textContent = pad(d.getHours()) + ":" + pad(d.getMinutes()) + " 업데이트";
-    }).catch(function(){
-      if (my !== reqId) return;
-      renderError(t.q); updEl.textContent = "연결 실패";
-    }).then(function(){ if (my === reqId) refBtn.classList.remove("spin"); });
+  function skeleton(){
+    listEl.textContent = "";
+    for (var i = 0; i < 5; i++){ var li = document.createElement("li"); li.className = "sk"; listEl.appendChild(li); }
   }
-  refBtn.onclick = refresh;
-
-  if (active >= topics().length) active = 0;
-  renderChips();
-  refresh();
-  setInterval(function(){ if (!document.hidden) refresh(); }, REFRESH_MS);
-  document.addEventListener("visibilitychange", function(){ if (!document.hidden) {
-    var t = updEl.textContent; if (t === "연결 실패") refresh();
-  }});
+  function load(manual){
+    if (!data) skeleton();
+    refBtn.classList.add("spin");
+    fetch("news.json?t=" + Date.now(), { cache: "no-store" })
+      .then(function(r){ if (!r.ok) throw new Error(r.status); return r.json(); })
+      .then(function(d){
+        data = d;
+        if (!active || d.order.indexOf(active) < 0) active = d.order[0];
+        renderChips(); renderList();
+        updEl.textContent = ago(d.updated) + " 수집";
+      })
+      .catch(function(){
+        if (!data){ msg("뉴스를 준비하고 있어요. 1~2분 뒤 ↻ 를 눌러주세요."); updEl.textContent = "준비 중"; }
+      })
+      .then(function(){ refBtn.classList.remove("spin"); });
+  }
+  refBtn.onclick = function(){ load(true); };
+  load();
+  setInterval(function(){ if (!document.hidden) load(); }, POLL_MS);
+  setInterval(function(){ if (data) updEl.textContent = ago(data.updated) + " 수집"; }, 60000);
 </script>
 </body>
 </html>
