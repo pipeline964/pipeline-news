@@ -30,3 +30,9 @@ jobs:
           path: site
       - id: deployment
         uses: actions/deploy-pages@v4
+        continue-on-error: true
+      # GitHub 일시 오류로 반영이 실패하면 30초 뒤 한 번 더 시도
+      - if: steps.deployment.outcome == 'failure'
+        run: sleep 30
+      - if: steps.deployment.outcome == 'failure'
+        uses: actions/deploy-pages@v4
